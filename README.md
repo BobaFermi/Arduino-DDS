@@ -10,10 +10,15 @@ The idea is that all the commands expected to be used during an experimental seq
 Listening mode - Activated using a digital pin. The command queue is cleared if it was populated before. Ethernet port is active, and the Arduino listens for UDP packets sent to its IP address. The packets are only accepted if they are of the minimum length.
 
 Interpreter mode - Ethernet port is deactivated, DDS CS pin is activated. The UDP strings are interpreted. The expected format is "a#b#c.x#d.y#e.z@", where:
+
 a - mode of operation (single frequency or linear frequency sweep?)
+
 b - output channel of DDS (CH1 or CH2 in AD9958, CH1, CH2, CH3 or CH4 in AD9959)
+
 c.x - start frequency of linear sweep, or just the desired constant frequency 
+
 d.y - end frequency for linear sweep (required to be in UDP string, but ignored if signle frequency mode selected)
+
 e.z - duration for linear sweep (required to be in UDP string, but ignored if signle frequency mode selected)
 
 The # symbols separate the parameters of a command and the @ symbols separate different commands, so the Arduino can tell the difference between each of them. For each parameter the Due extracts, it converts it from string to int (a, b) or float (c.x, d.y, e.z). The frequencies and duration need to be converted to values related to the clock rate and phase accumulator range of the DDS chip before being transmitted. An array is populated with all the final values ready to be sent to the DDS.
