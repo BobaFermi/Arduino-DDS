@@ -1,13 +1,3 @@
-/*******************************************************************************
- * ddsAD9959
- * Control DDS AD9958 and AD9959
- * 
- * Craig D. Colquhoun, Glasgow 2017
- 
- TO CHANGE DEFAULT FREQUENCY, CHANGE BOTH THE VALUE OF defaultFreq (LINE 65 AT TIME OF WRITING) AND THE FOUR commandVect[i].startFreqWrite VALUES IN THE clearCommandList FUNCTION.
- TAKE FREQUENCY IN HZ, DIVIDE BY CLOCK FREQUENCY (1 GHZ AT TIME OF WRITING) AND MULTIPLY BY 2^32, BEFORE CONVERTING TO HEXCODE!
- ******************************************************************************/
- 
 #include <SPI.h>
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
@@ -65,10 +55,10 @@ unsigned int delayTime;
 double defaultFreq = 72.0;
 
 typedef enum {
-  CH0               = 0x10, //Unused
-  CH1               = 0x20, //Unused
-  CH2               = 0x40, //Channel 0
-  CH3               = 0x80,  //Channel 1
+  CH0               = 0x10, //AD9959
+  CH1               = 0x20, //AD9959
+  CH2               = 0x40, //Channel 0 in AD9958, Channel2 in AD9959
+  CH3               = 0x80,  //Channel 1 in AD9958, channel3 in AD9959
   BOTH              = 0xC0  //Channels 0 and 1 simultaneously
 } ad9959_channels;
 
@@ -85,7 +75,7 @@ typedef enum {
   FDW               = 0x09, //Falling Delta Word
   CTW1              = 0x0A, //Channel Tuning Register 1
   CTW2              = 0x0B, //...and so on
-  CTW3              = 0x0C,
+  CTW3              = 0x0C, //Only CTW0 and CTW1 are needed for our application, start and end frequencies, one rate.
   CTW4              = 0x0D,
   CTW5              = 0x0E,
   CTW6              = 0x0F,
@@ -101,6 +91,7 @@ typedef enum {
   READ              = 0x80 // not really a register
 } ad9959_registers;
 
+//Now initialising the data arrays for filling the registers
   byte CSRbyte      = 0x00; 
   byte FR1byte[3]   = {0x00, 0x00, 0x00};
   byte FR2byte[2]   = {0x00, 0x00};
@@ -116,6 +107,7 @@ typedef enum {
   //byte default80MHz[4] = {0x28, 0xf5, 0xc2, 0x8f}; SETTING DEFAULT FREQUENCY NOW IN clearCommandList() FUNCTION
   byte chan = 0;
 
+//data structure for command queue
 struct tCommand {
   int rcvCmd;
   ad9959_channels chan;
