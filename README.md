@@ -23,4 +23,4 @@ e.z - duration for linear sweep (required to be in UDP string, but ignored if si
 
 The # symbols separate the parameters of a command and the @ symbols separate different commands, so the Arduino can tell the difference between each of them. For each parameter the Due extracts, it converts it from string to int (a, b) or float (c.x, d.y, e.z). The frequencies and duration need to be converted to values related to the clock rate and phase accumulator range of the DDS chip before being transmitted. An array is populated with all the final values ready to be sent to the DDS.
 
-Execution mode - Two digital pins are used to either execute the first command on the array before deleting it, or just to delete it and move on to the next command (in rare cases). 
+Execution mode - Two digital pins are used to either execute the selected command on the array before moving onto the next command, or just to and move on to the next command without executing the currently selected command (in rare cases). 
