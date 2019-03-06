@@ -150,39 +150,42 @@ void setup ()  {
   Udp.begin(8020);
   digitalWrite(eth_CS, HIGH);
 
+  //initialise lcd screen
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0,0);
   lcd.print("0");
   lcd.setCursor(0,1);
   lcd.print("1");
+  
+  //set default output for DDS (safe value for AOM)
   setDefaultSetting();
   clearCommandList();
 }
 
 void loop()  {
   int retValue;
-  bool bExeFlag = 0;
-  bool doIDisplay = 1;
+  bool bExeFlag = 0; //We are not in execute mode
+  bool doIDisplay = 1; //Update the text on the LCD display
   
-  if (!digitalRead(pin_RcvCmd))
+  if (!digitalRead(pin_RcvCmd)) //If the digital input to select receive mode is not active, go back to start to loop
   {
     delay(idleDelay);
     return;
   }
   digitalWrite(eth_CS, LOW);                    //Select ethernet shield so that it can be used without interfering with DDS
-  retValue = receiveCommand();                             //Receive commands through ethernet port
+  retValue = receiveCommand();                  //Receive commands through ethernet port, returns value > 0 for successful read
   digitalWrite(eth_CS, HIGH);                   //Deselect ethernet shield in order to send commands to DDS again
-  if (!retValue) return;
-  if (!parseCommandString()) return;
-  if (commandVect[actNCommand].chan == CH2) lcd.setCursor(1,0);
-  else if (commandVect[actNCommand].chan == CH3) lcd.setCursor(1,1);
-  lcd.print("COMMANDS PARSED");
+  if (!retValue) return;                        //If we haven't successfully received data via ethernet port, go back to start of loop
+  if (!parseCommandString()) return;            //run function parseCommandString (~line 500), if a 0 is returned, go back to start of loop
+  if (commandVect[actNCommand].chan == CH2) lcd.setCursor(1,0);  //If the current command selects CH2, point to CH2 index on LCD screen 
+  else if (commandVect[actNCommand].chan == CH3) lcd.setCursor(1,1); //If the current command selects CH3, point to CH3 index on LCD screen
+  lcd.print("COMMANDS PARSED"); //Indicate readiness to go ahead with execution mode
       
-  while(digitalRead(pin_RcvCmd)) delay(1);
-  while(actNCommand<=usedNCommands)
+  while(digitalRead(pin_RcvCmd)) delay(1);  //We have already received commands, do nothing until the receive pin is switched off
+  while(actNCommand<=usedNCommands) //while active command is less than or equal to the number of commands in memory
   {  
-    if(doIDisplay == 1)
+    if(doIDisplay == 1) //Update LCD 
     {  
       if (commandVect[actNCommand].chan == CH2) lcd.setCursor(1,0);
       else if (commandVect[actNCommand].chan == CH3) lcd.setCursor(1,1);
@@ -192,26 +195,26 @@ void loop()  {
       doIDisplay = 0;
     }
     
-    if (digitalRead(pin_RcvCmd)) return;
-    else if (!bExeFlag && digitalRead(pin_ExeCmd))
+    if (digitalRead(pin_RcvCmd)) return; //If rcvCmd pin is switched on during interpreter or execution mode, go back to start of loop
+    else if (!bExeFlag && digitalRead(pin_ExeCmd)) //if a command is not currently being executed, and the execute pin is switched on
     {
-      executeCommand();
-      actNCommand++;
-      bExeFlag = 1;
+      executeCommand(); //execute the selected command
+      actNCommand++; //Increment the position in the command queue
+      bExeFlag = 1; //We are now running a command
     }
-    else if (bExeFlag && !digitalRead(pin_ExeCmd))
+    else if (bExeFlag && !digitalRead(pin_ExeCmd)) //If we are running a command and the execute pin is switched off
     {
-      bExeFlag = 0;
-      doIDisplay = 1;
-      if (actNCommand == usedNCommands) break;      
+      bExeFlag = 0; //get ready to execute the next command
+      doIDisplay = 1; //Update LCD display to reflect the change in command
+      if (actNCommand == usedNCommands) break; //exit while loop if we are at the end of the command list
     }
   }
-  setDefaultSetting();
-  return;
+  setDefaultSetting(); //Go back to default 72 MHz for AOM safe value
+  return; //Go back to start
 } 
 
 //****************************
-// clear command structure
+// set all commands to default command for safety
 //****************************
 void clearCommandList() {
   for (int i = 0; i < 5; i++){
@@ -240,12 +243,14 @@ void clearCommandList() {
       commandVect[i].rampRate[j] = 0x00;
     }
   }
-  usedNCommands = 0;
+  usedNCommands = 0; //ignore the list of commands until it's repopulated
   actNCommand   = 0;
 }
-//****************************
-// Frequency
-//****************************
+/*
+Frequency and sweep rate conversion - converts 
+frequency in Hz to frequency word value as per 
+equations in AD9958/AD9959 datasheet.
+*/
 void calcParam(int cIndex, ad9959_registers REG, double param){  
   if ((REG == 4) || (REG > 7))
   {
@@ -280,7 +285,7 @@ void calcParam(int cIndex, ad9959_registers REG, double param){
     }
     else if (REG > 10)
     {
-      //NOT PROGRAMMED YET
+      //I haven't programmed that path yet
       return;
     }
   }
@@ -305,6 +310,19 @@ void programDDS()
     else if (commandVect[actNCommand].chan == CH2) profilePin = pin_P2;    
     writeReg(CSR, commandVect[actNCommand].chan);
     if (commandVect[actNCommand].startFreq > commandVect[actNCommand].stopFreq) //if sweep down
+    /*
+    This requires a bit of trickery. The DDS would sweep up just fine,
+    then jump straight back to the start frequency when we attempted to sweep down. 
+    We trick the DDS by setting a sweep up with the end frequency being where we 
+    would like to begin the down sweep from, and the start frequency being 0.12 Hz 
+    below that (the best resolution the DDS will allow). Once this "sweep" has
+    completed, the DDS is now outputting at the start frequency for the down sweep.
+    We set the end frequency for the down sweep without changing anything else,
+    causing some sort of "sweep accumulator" to reset, meaning that if we trigger
+    a downwards sweep, it will actully sweep and not just jump down. 
+    This is either a glitch in the DDS, or I don't understand something properly.
+    Either way, it's a bit tedious to explain. 
+    */
     {
       pinStatus = 1;      
       writeReg(RDW, commandVect[actNCommand].riseWord, 4);
@@ -315,7 +333,7 @@ void programDDS()
       digitalWrite(profilePin, pinStatus);
       writeReg(CTW0, commandVect[actNCommand].stopFreqWrite, 4);
     }
-    else //assumed sweeping up
+    else //assumed sweeping up, much simpler than downwards sweep
     {
       pinStatus = 0;
       writeReg(CTW0, commandVect[actNCommand].startFreqWrite, 4);
@@ -330,51 +348,56 @@ void programDDS()
   }
 }
 
+/*
+In the event of a frequency sweep, we take the start and end frequencies and duration of the sweep, 
+and attempt to create the smoothest sweep using those parameters. Smallest frequency steps, and duration
+of time to stay on each frequency. This process is a little time consuming, is there some better way to do it?
+*/
 void calcFreqSweep(int cIndex)
 {
   double hzStartFreq;
   double hzEndFreq;
-  if (commandVect[cIndex].startFreq > commandVect[cIndex].stopFreq)
+  if (commandVect[cIndex].startFreq > commandVect[cIndex].stopFreq) //DDS requires for end frequency to be larger than start frequency
   {
-    hzStartFreq = commandVect[cIndex].stopFreq * 1000000;
-    hzEndFreq = commandVect[cIndex].startFreq * 1000000;
+    hzStartFreq = commandVect[cIndex].stopFreq * 1000000; //convert lower frequency to Hz 
+    hzEndFreq = commandVect[cIndex].startFreq * 1000000;  //convert upper frequency to Hz
   }
   else
   {
     hzStartFreq = commandVect[cIndex].startFreq * 1000000;
     hzEndFreq = commandVect[cIndex].stopFreq * 1000000;
   }
-  unsigned long n = 65536;
-  bool foundFlag = 0;
-  float dTime, dFreq;
-  int k = 10000;
+  unsigned long n = 65536; //Coefficient to help us smooth out the sweep as much as possible
+  bool foundFlag = 0;       //If we find n value that works, this will be set to 1
+  float dTime, dFreq;       //How much should the frequency change, how long should it stay there?
+  int k = 10000;    //k, l, m, just various values to increment/decrement in this loop
   int l = 0;
   int m = 0;
-  int minNValue = 1;
-  unsigned long maxNValue = min(commandVect[cIndex].duration/0.000000008, (hzEndFreq-hzStartFreq)/0.12);
+  int minNValue = 1;  //Smallest value for n that can yield acceptable results
+  unsigned long maxNValue = min(commandVect[cIndex].duration/0.000000008, (hzEndFreq-hzStartFreq)/0.12); //max acceptable value for n
   do      
   {
-    dTime = (125000000.0*commandVect[cIndex].duration)/n;
-    dFreq = 1.0*(hzEndFreq-hzStartFreq)/n;
-    if ((dFreq < 0.12) || (dTime < 1))
+    dTime = (125000000.0*commandVect[cIndex].duration)/n;   //calculate amount of time DDS should remain on each frequency during the sweep
+    dFreq = 1.0*(hzEndFreq-hzStartFreq)/n;    //calculate the jump in frequency per step in the sweep
+    if ((dFreq < 0.12) || (dTime < 1)) //if either of these variables are smaller than the best resolution allowed by the DDS
     {
-      l = 1;
-      n = n - k;
+      l = 1; //set direction of scan for optimal dTime and dFreq
+      n = n - k;  //decrease n (by 10000 at first for speed, if we overshoot we change the order of magnitude for the scan)
     }
-    else if ((dFreq > (hzEndFreq-hzStartFreq)) || (dTime > 255))
+    else if ((dFreq > (hzEndFreq-hzStartFreq)) || (dTime > 255)) //if the frequency step is larger than the sweep itself, or time steps are larger than allowed
     {
-      l = -1;
-      n = n + k;
+      l = -1;   //set direction of scan for optimal dTime and dFreq
+      n = n + k;  //increase n (by 10000 at first for speed, if we overshoot, we change the order of magnitude of the scan)
     }
-    else if((dFreq <= (hzEndFreq-hzStartFreq)) && (dTime <= 255) && (dFreq >= 0.12) && (dTime >= 1))
+    else if((dFreq <= (hzEndFreq-hzStartFreq)) && (dTime <= 255) && (dFreq >= 0.12) && (dTime >= 1)) //if dF and dT are within acceptable ranges
     {        
-      if (k > 1)
+      if (k > 1)    //if increment/decrement value is more than 1 and we've overshot the optimal answer for dT and dF
       {
-        m = l*k;
-        n = n + m;
-        k = k/10;
+        m = l*k;    //flip the scan direction for one step
+        n = n + m;  //go back one step
+        k = k/10;   //lose an order of magnitude, we overshot and now we need to take smaller steps
       }
-      else foundFlag = 1;
+      else foundFlag = 1; //if k is one and we overshot, we've found our optimal answer
     }
     else
     {
@@ -391,7 +414,7 @@ void calcFreqSweep(int cIndex)
   }while (foundFlag == 0);
   
 
-  if(foundFlag==0)
+  if(foundFlag==0)    //we can't take the sweep if we could not find a solution for dFreq or dTime
   {  
     if (commandVect[cIndex].chan == CH2) lcd.setCursor(1,0);
     else if (commandVect[cIndex].chan == CH3) lcd.setCursor(1,1);
@@ -402,8 +425,10 @@ void calcFreqSweep(int cIndex)
     return;
   }
   
+  //convert dFreq to MHz, the conversion to frequency word starts from MHz.
   dFreq = dFreq / 1000000.0;
 
+  //fill registers with calculated values
   calcParam(cIndex, CTW0, commandVect[cIndex].startFreq);
   calcParam(cIndex, CTW1, commandVect[cIndex].stopFreq);
   calcParam(cIndex, RDW, dFreq);
@@ -411,19 +436,20 @@ void calcFreqSweep(int cIndex)
   calcParam(cIndex, LSR, dTime);
 }
 
+//Simple settings back to default, safe values for AOM
 void setDefaultSetting(){
-  clearCommandList();
-  CFRbyte[0] = 0x00; CFRbyte[1] = 0x03; CFRbyte[2] = 0x00;
-  initDDS(BOTH);
-  programDDS();
-  lcd.setCursor(1,0);
+  clearCommandList(); //Clear command vector and set 72 MHz constant output
+  CFRbyte[0] = 0x00; CFRbyte[1] = 0x03; CFRbyte[2] = 0x00; 
+  initDDS(BOTH);  //Reset DDS and quickly set default safe frequency output on both channels (AD9958)
+  programDDS();   //Take default commands and fill registers with default values
+  lcd.setCursor(1,0);   //Update LCD screen to reflect default settings are in effect
   lcd.print("DEFAULT        ");
   lcd.setCursor(1,1);
   lcd.print("DEFAULT        ");
 }
 
 void initDDS(byte initChan) { 
-  digitalWrite(pin_P0, LOW);
+  digitalWrite(pin_P0, LOW); //Make sure all digital pins are set to low before we reset the DDS
   digitalWrite(pin_P1, LOW);
   digitalWrite(pin_P2, LOW);
   digitalWrite(pin_P3, LOW);
@@ -431,7 +457,7 @@ void initDDS(byte initChan) {
   digitalWrite(pin_IO2, LOW);
   digitalWrite(pin_IO3, LOW);
 
-  digitalWrite(pin_CS, HIGH);  // ensure SS stays high
+  digitalWrite(pin_CS, HIGH);  // ensure SS stays high so we don't communicate with DDS until it's been reset
   SPI.begin();
   SPI.setClockDivider(2);                 //Can be integer from 1 - 255 using Due, divides the 84MHz clock rate by this number
   SPI.setBitOrder(MSBFIRST);
@@ -441,11 +467,11 @@ void initDDS(byte initChan) {
     resetDDS();
     bHasReset = 1;
   }
-  writeReg(CSR, initChan);
+  writeReg(CSR, initChan);  //Channel select register, select the desired channel
   FR1byte[0] = 0xD0; FR1byte[1] = 0x54;
-  writeReg(FR1, FR1byte, sizeof(FR1byte));
-  writeReg(FR2, FR2byte, sizeof(FR2byte));
-  writeReg(CFR, CFRbyte, sizeof(CFRbyte));
+  writeReg(FR1, FR1byte, sizeof(FR1byte));    //function register 1
+  writeReg(FR2, FR2byte, sizeof(FR2byte));    //function register 2
+  writeReg(CFR, CFRbyte, sizeof(CFRbyte));    //channel function register
 }
 
  // flip reset pin
@@ -454,128 +480,133 @@ void initDDS(byte initChan) {
     digitalWrite(pin_Reset, LOW);    
  }
 
- // trigger update pin
+ // trigger update pin, has to happen whenever a register is written to
  void updateDDS() {
     digitalWrite(pin_IOUpdate, HIGH); 
     digitalWrite(pin_IOUpdate, LOW); 
  }
 
+
+//Function to write to registers on the DDS that only require one byte to be sent
  void writeReg(ad9959_registers REG, byte value) {
-    digitalWrite(pin_CS, LOW); 
-    SPI.transfer(REG); 
-    SPI.transfer(value);
-    updateDDS();
-    digitalWrite(pin_CS, HIGH);  
+    digitalWrite(pin_CS, LOW);  //We want to communicate with the DDS chip
+    SPI.transfer(REG);    //Send register
+    SPI.transfer(value);  //Send value this register should be filled with
+    updateDDS();          //DDS should now update selected register
+    digitalWrite(pin_CS, HIGH);  //Stop communicating with DDS chip
  }
 
+//Function to write to registers that requre multiple bytes to be sent
  void writeReg(ad9959_registers REG, byte *buffer, int len){
-    digitalWrite(pin_CS, LOW); 
-    SPI.transfer(REG); 
-    SPI.transfer(buffer,len);
-    updateDDS();
-    digitalWrite(pin_CS, HIGH);  
+    digitalWrite(pin_CS, LOW); //Open communication with DDS
+    SPI.transfer(REG);         //Transfer register we want to fill
+    SPI.transfer(buffer,len);  //Transfer bytes that should be contained in that register
+    updateDDS();               //Update DDS with new register value
+    digitalWrite(pin_CS, HIGH);  //Close communication with DDS
  }
 
+//This is what we do whenever the Ethernet port is active
 int receiveCommand()
 {
   // buffer to receive string with UDP
-  char UDPBuffer[UDP_TX_PACKET_MAX_SIZE];     
-  int ret = 0;
-  int packLength = Udp.parsePacket();
-  int expectedResponse = 12;
+  char UDPBuffer[UDP_TX_PACKET_MAX_SIZE];     //UDP Buffer of max possible size
+  int ret = 0;                                //Set return value to 0, if commands are successfully received, this is set to 1 later
+  int packLength = Udp.parsePacket();         //Check the size of the packet
+  int expectedResponse = 12;                  //Minimum string size the Ardunio should accept, anything less and some data has probably been lost
   commandString = "";     // clear the commandString
   
-  while (packLength>0) {
-    if (packLength >= expectedResponse) {
+  while (packLength>0) {                      //While there are still characters left in the received string
+    if (packLength >= expectedResponse) {     //If the packet is longer than the minimum we would expect, read it
       Udp.read(UDPBuffer, UDP_TX_PACKET_MAX_SIZE);  // read packet into the buffer
-      for (int i = 0; i < packLength; i++){
-        commandString = commandString + UDPBuffer[i];
+      for (int i = 0; i < packLength; i++){         
+        commandString = commandString + UDPBuffer[i];   //convert the UDP packet to a string
       }
-      ret = 1;
+      ret = 1;  //success!
     }
-    packLength = Udp.parsePacket();
+    packLength = Udp.parsePacket(); //check how much data is left over in case we didn't catch everything
   }
   return ret;
 }
 
-
+//Now that we have a command string, we need to interpret it
 int parseCommandString() {
-  int ret = 0;
+  int ret = 0;    //If this function is successful, ret will be set to 1 later
   String stringParse = "";    // dummy string 
   String stringParseAT = "";  // dummy string 
   
   int chSelect;               // channel
   int rcvCmd;                 // command mode  
-  double startFreq, stopFreq, duration;
+  double startFreq, stopFreq, duration; //Rest of parameters 
   
-  int cIndexAT;
-  int cIndexHASH,cIndexStart;
-  int cIndexCounter = 0;
+  int cIndexAT;                     //position of @ symbol, marks the end of a command
+  int cIndexHASH,cIndexStart;       //position of # symbol, marks end of each parameter
+  int cIndexCounter = 0;            //This is how many separate commands have been detected
   
-  clearCommandList();
+  clearCommandList();   
 
-  commandString.trim();
-  if (commandString.length()==0) return ret;
-  cIndexAT = commandString.indexOf('@');
+  commandString.trim();                       //remove any white space from commandString
+  if (commandString.length()==0) return ret;  //If commandString has a length of 0, no point in continuing. Return 0 for error.
+  cIndexAT = commandString.indexOf('@');      //Find position of @, so we know at what index the first command ends
     
-  // parse the commandStrings
-  while (cIndexAT!=-1 && cIndexCounter<maxNCommands) {
+  //while there is an @ symbol has been detected in the string and fewer than the max commands have already been detected
+  while (cIndexAT!=-1 && cIndexCounter<maxNCommands) {  
 
     // get the substring up to next @
     stringParseAT = commandString.substring(0,cIndexAT);
     
-    // get command number
-    cIndexHASH = stringParseAT.indexOf('#',0);
-    if (cIndexHASH==-1) return ret;
-    stringParse = stringParseAT.substring(0,cIndexHASH);
-    rcvCmd = stringParse.toInt();//setting
-    if (rcvCmd<1 || rcvCmd>3) return ret;
-    commandVect[cIndexCounter].rcvCmd = rcvCmd;
-    cIndexStart = cIndexHASH+1;
+    
+    //Operation mode
+    cIndexHASH = stringParseAT.indexOf('#',0);  //find position of next # symbol
+    if (cIndexHASH==-1) return ret;           //return 0 for error if # isn't found
+    stringParse = stringParseAT.substring(0,cIndexHASH);  //make substring from index 0 to the position before the next # symbol
+    rcvCmd = stringParse.toInt();             //extract operation mode, convert to integer
+    if (rcvCmd<1 || rcvCmd>3) return ret;     //return 0 for error if we receive a number we didn't expect for an operation mode
+    commandVect[cIndexCounter].rcvCmd = rcvCmd;   //save this to the command list array
+    cIndexStart = cIndexHASH+1;   //take index for start of next parameter
 
-    // get device number
-    cIndexHASH = stringParseAT.indexOf('#',cIndexStart);
-    if (cIndexHASH==-1) return ret;
-    stringParse = stringParseAT.substring(cIndexStart,cIndexHASH);
-    chSelect = stringParse.toInt();//setting
-    switch (chSelect) {
+    //Output channel
+    cIndexHASH = stringParseAT.indexOf('#',cIndexStart);  //find position of next # symbol
+    if (cIndexHASH==-1) return ret;     //return error if # isn't found
+    stringParse = stringParseAT.substring(cIndexStart,cIndexHASH);    //make substring from start of this parameter to next #
+    chSelect = stringParse.toInt();   //extract ouput channel from string, convert to integer
+    switch (chSelect) {               //React differently based on what channel is selected
     case 1:
       commandVect[cIndexCounter].chan = CH2; break;
     case 2:
       commandVect[cIndexCounter].chan = CH3; break;
     default:
-      return ret;
+      return ret;     //return 0 if anything other than a value corresponding to CH2 or CH3 is received
     }
-    cIndexStart = cIndexHASH+1;
+    cIndexStart = cIndexHASH+1;   //Find index after next #
     
-    // get start freq
-    cIndexHASH = stringParseAT.indexOf('#',cIndexStart);
+    //start frequency
+    cIndexHASH = stringParseAT.indexOf('#',cIndexStart); 
     if (cIndexHASH==-1) return ret;
-    stringParse = stringParseAT.substring(cIndexStart,cIndexHASH);
-    startFreq = stringParse.toDouble();
-    if (startFreq<60 || startFreq>110) return ret;
-    commandVect[cIndexCounter].startFreq = startFreq;
+    stringParse = stringParseAT.substring(cIndexStart,cIndexHASH);  
+    startFreq = stringParse.toDouble();               //take frequency value from string, convert it to double
+    if (startFreq<60 || startFreq>110) return ret;    //compare frequency to accepted safe range for AOM, return error if outwith that range
+    commandVect[cIndexCounter].startFreq = startFreq; //add to command array
     cIndexStart = cIndexHASH+1;
 
-    // get stop freq
+    //end frequency
     cIndexHASH = stringParseAT.indexOf('#',cIndexStart);
     if (cIndexHASH==-1) commandVect[cIndexCounter].stopFreq = defaultFreq;
     else {   
       stringParse = stringParseAT.substring(cIndexStart,cIndexHASH);
-      stopFreq = stringParse.toDouble();
-      if (stopFreq<60 || stopFreq>100) return ret;
+      stopFreq = stringParse.toDouble();                //find end frequency in string, convert to double
+      if (stopFreq<60 || stopFreq>100) return ret;      //return error if this is outwith acceptable range
     }
     commandVect[cIndexCounter].stopFreq = stopFreq;
     cIndexStart = cIndexHASH+1;
 
+    //sweep duration
     stringParse = stringParseAT.substring(cIndexStart);
     if (stringParse.length()<1) commandVect[cIndexCounter].duration = 0.0;
     else {   
-      duration = stringParse.toDouble();
-      if (duration<0 || duration>10) return ret;
-      if (duration==0) return ret;
+      duration = stringParse.toDouble();                //find duration in string, convert to double
+      if (duration<=0 || duration>10) return ret;        //return error if duration is outwith acceptable range
     }
-    commandVect[cIndexCounter].duration = duration;
+    commandVect[cIndexCounter].duration = duration;      //add sweep duration to the command array
     calcFreqSweep(cIndexCounter);
     
     commandString.remove(0,cIndexAT+1);
@@ -585,7 +616,7 @@ int parseCommandString() {
   }
   
   ret = 1;
-  return ret;
+  return ret;     //return success
 }
 
 void executeCommand() {
